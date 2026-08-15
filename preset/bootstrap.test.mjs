@@ -3,28 +3,30 @@
 import assert from 'node:assert/strict'
 import {
   phaseOf, unlockedFor, applyPersona, isFlashModel, personaFor,
-  WEAK_PRO, WEAK_FLASH, MINIMAL_PERSONA, BOOTSTRAP_TOOLS,
-  RESIDENT_DISCOVERY_TOOLS, COMPACTION_TOOLS,
+  WEAK_FLASH, MINIMAL_PERSONA, BOOTSTRAP_TOOLS,
+  RESIDENT_DISCOVERY_TOOLS, COMPACTION_TOOLS, BOOTSTRAP_REASONING_EFFORTS,
 } from './bootstrap.mjs'
 
 const ev = (type, seq, data = {}) => ({ type, seq, data })
 
 // ── persona routing ────────────────────────────────────────────────────────
 
-// Pro (default) gets w6c — NOT the flash w7 anchors.
+// Pro (default) gets the exact RL spec sentence — byte-identical, zero anchors.
 {
   const p = personaFor('deepseek-v4-pro', {})
-  assert.equal(p, WEAK_PRO)
+  assert.equal(p, MINIMAL_PERSONA)
+  assert.equal(p, 'You are a helpful software engineer assistant.')
+  assert.ok(!p.includes('build or fix'))
   assert.ok(!p.includes('Think deeply'))
-  assert.ok(!p.includes('review what you have already done'))
-  assert.ok(p.includes('build or fix'))
+  assert.ok(!p.includes('Before acting'))
+  assert.ok(!p.includes('\n'), 'persona must be exactly one sentence')
 }
 
-// pro-max / pro variants also get w6c.
+// pro-max / pro variants also get the exact RL spec sentence.
 {
-  assert.equal(personaFor('deepseek-v4-pro-max', {}), WEAK_PRO)
-  assert.equal(personaFor('deepseek-pro', {}), WEAK_PRO)
-  assert.equal(personaFor(undefined, {}), WEAK_PRO)
+  assert.equal(personaFor('deepseek-v4-pro-max', {}), MINIMAL_PERSONA)
+  assert.equal(personaFor('deepseek-pro', {}), MINIMAL_PERSONA)
+  assert.equal(personaFor(undefined, {}), MINIMAL_PERSONA)
 }
 
 // Flash still gets w7 (compat).
@@ -34,7 +36,7 @@ const ev = (type, seq, data = {}) => ({ type, seq, data })
 
 // Config overrides.
 {
-  assert.equal(personaFor('deepseek-v4-pro', { proPersona: MINIMAL_PERSONA }), MINIMAL_PERSONA)
+  assert.equal(personaFor('deepseek-v4-pro', { proPersona: 'custom pro' }), 'custom pro')
   assert.equal(personaFor('deepseek-v4-flash', { flashPersona: 'custom' }), 'custom')
 }
 
@@ -87,12 +89,16 @@ const ev = (type, seq, data = {}) => ({ type, seq, data })
 {
   const out = applyPersona([
     { name: 'persona', text: 'old' },
+    { name: 'harness:identity', text: 'You are an AI agent powered by DeepSeek Harness.' },
     { name: 'plan-mode', text: 'keep me' },
+    { name: 'runtime-tool-guidance', text: 'drop me' },
   ], 'NEW')
+  // 只保留 plan 类 + router-persona；identity/工具说明等全部丢弃（exact RL prompt）。
   assert.equal(out.length, 2)
   assert.equal(out[0].name, 'plan-mode')
   assert.equal(out[1].name, 'router-persona')
   assert.equal(out[1].text, 'NEW')
+  assert.equal(out[1].order, -1000, 'persona must be the first rendered section')
 }
 
 // ── isFlashModel ───────────────────────────────────────────────────────────
@@ -105,7 +111,10 @@ assert.equal(isFlashModel(undefined), false)
 
 assert.ok(BOOTSTRAP_TOOLS.includes('bash'))
 assert.ok(BOOTSTRAP_TOOLS.includes('str_replace_editor'))
+assert.ok(!BOOTSTRAP_TOOLS.includes('read'), 'official RL pair: no read in bootstrap')
 assert.ok(RESIDENT_DISCOVERY_TOOLS.includes('dev_tool_search'))
 assert.ok(COMPACTION_TOOLS.includes('read'))
+// opencode-go deepseek-v4-pro 的 thinkingLevelMap 只支持这三档。
+assert.deepEqual([...BOOTSTRAP_REASONING_EFFORTS].sort(), ['high', 'max', 'off'])
 
 console.log('✅ all anchored-pro bootstrap tests passed')

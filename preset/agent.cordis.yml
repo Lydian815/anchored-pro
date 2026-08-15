@@ -1,25 +1,30 @@
-# The `anchored-pro` experimental preset: Pro 满血 × Minimal 工具面锚定。
+# The `anchored-pro` experimental preset: Pro 满血 × exact RL persona × 低工具占比首轮。
 #
 # 组成继承 xiaobright/dsh-anchored-standard（Standard 全快照），核心差异：
 #   - bootstrap.mjs 取代 tool-bootstrap.mjs：晋升判定改为 system-prompt/assemble
 #     冷扫描 session.events（rc.6 的 session/event 观察对 preset 作用域失效，
-#     已实证），persona 静态合并 Pro 标定引导（w6c：spec 句 + 分类指令；
-#     P11 实测对 Pro 最优，w7 的回顾/收敛/反跑题锚对 Pro 有害）。
+#     已实证），persona 静态合并 **exact RL spec 句**（"You are a helpful
+#     software engineer assistant."，一字不改 —— DSH minimal 快照自称
+#     "the exact RL prompt and schemas"，附加/改写即落入训练分布间隙，
+#     实证见 README「为什么 persona 必须是精确 spec 句」；w7 全套对 Pro 禁用）。
+#   - 首轮请求经 agent/request 注入 bootstrapReasoningEffort；本 preset 显式
+#     选择 max。晋升后保留宿主 selection 的 reasoningEffort，漏值时才兜底。
 #   - 不挂 dsh-agent-instructions / dsh-tool-skill：AGENTS.md 与 skill catalog
 #     的全量注入会扰动轨迹，改为晋升后一次性「文件存在」提示（bootstrap.mjs
 #     内置）与按需 skill_search / skill_load。
 #
 # 阶段：
-#   - 未晋升（首轮）：只暴露 Minimal 真实工具对 —— 持久 bash +
-#     str_replace_editor（issue #11：256000 maxTokens 下 Minimal schema
-#     5/5 锚定，standard 系 schema 11/11 全部 standard 式行为）；同时剥离
-#     自动注入上下文、清空 assembled.contexts。
+#   - 未晋升（首轮）：bash + read/write/edit 四件套（exact persona 下工具面
+#     是次要变量：minimal persona + 6 文件工具实测 2/2 minimal-like；opencode-go
+#     上 str_replace_editor 实证连败，故不再默认暴露）；同时剥离自动注入
+#     上下文、清空 assembled.contexts。
 #   - 晋升后（日志中出现首个 tool/call 或 assistant/message）：引导对 +
 #     dev_tool_search / skill_search / skill_load + 模型显式解锁的工具。
 #     重型工具（web_search、subagent、workflow、goal、job……）一次
 #     dev_tool_search 解锁即得，不全量倾倒 Standard 目录。
 #   - 压缩后（compaction/end 之后）：回退到引导对 + compactionTools 工作集，
-#     直到出现新的晋升信号（epoch 语义，全部由持久日志推导）。
+#     直到出现新的晋升信号（epoch 语义，全部由持久日志推导）；晋升目录并入
+#     工作集（只增不减），避免 read/write/edit 中途消失。
 #
 # 本文件是 AGENT-PLANE 组成。roster 在 standing scope 下挂载一次，每个命名
 # 它的会话通过 scope 父链加入；工具与提示段注册覆盖每个加入的 agent，会话
@@ -38,13 +43,24 @@
 - id: anchored-pro-bootstrap
   name: ./bootstrap.mjs
   config:
+    # 首轮引导工具：复现官方满血条件（实验 2）——exact RL schemas 双工具对。
+    # 若实测 opencode-go 上 str_replace_editor 仍调用失败，再退回
+    # [bash, read, write, edit]（4 工具会提高首轮 schema 占比，见 README）。
     bootstrapTools: [bash, str_replace_editor]
     # 压缩后回退阶段的工作集：模型任务进行中需要继续干活，但面对小目录。
     compactionTools: [read, write, edit, glob, grep, todo_write, ask_user_question]
     suppressedContextSources: [agent-instructions, skill-catalog]
     instructionHint: true
+    # 首轮（未晋升/压缩回退）推理强度缓启动：实验 2 复现官方满血条件 → max
+    # （官方 Project2 实测就是 reasoningEffort=max）。'off' | 'high' | 'max'；
+    # null/false 禁用（完全跟随宿主）。opencode-go 的 deepseek-v4-pro 只
+    # 支持 off/high/max 三档。
+    bootstrapReasoningEffort: max
     # 可选：首轮输出预算上限（opt-in，默认不设 —— Minimal schema 在
     # 256000 下即可锚定；rc.6 预构建包可能用 adapterDefaults 覆盖该值）。
+    # ⚠️ reasoning 模型慎用：maxTokens 同时封顶「思维+答案」，链长时会在
+    # 思维中途 max-tokens 截断，表现为「let me 碎片循环」。压链长请用
+    # bootstrapReasoningEffort，而不是 bootstrapMaxTokens。
     # bootstrapMaxTokens: 1024
 
 # ── identity ────────────────────────────────────────────────────────────────
@@ -131,10 +147,11 @@
   config:
     sampleOverCapGlobResults: false
 
-# Minimal preset 的第二个工具：`str_replace_editor` 基于裸本地文件系统，
-# 配置与官方 minimal preset 的 filesystem 组逐字节一致。编辑器的 realm 只在
-# 本组内遮蔽宿主沙箱 fs provider —— 标准 read/write/edit 保持沙箱 fs，
-# 引导编辑器用本地 fs。
+# 官方 minimal preset 的第二个工具：`str_replace_editor`（基于裸本地文件系统，
+# 配置与官方 minimal preset 的 filesystem 组逐字节一致）。opencode-go 标定下
+# 默认不进任何阶段目录（实证连败），仅保留挂载：把 bootstrapTools 配成
+# [bash, str_replace_editor] 即可 A/B exact RL schemas。编辑器的 realm 只在
+# 本组内遮蔽宿主沙箱 fs provider —— 标准 read/write/edit 保持沙箱 fs。
 - id: bootstrap-filesystem
   name: cordis:group
   group: true

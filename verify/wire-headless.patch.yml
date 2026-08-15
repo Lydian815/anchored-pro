@@ -1,0 +1,25 @@
+# Temporary DSH overlay for a source-controlled Anchored Pro headless capture.
+# It disables only the stock runner, mounts the regular user preset roster, and
+# changes only the opencode-go endpoint for this one `dsh --patch` process.
+- id: headless-runner
+  disabled: true
+
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: anchored-pro
+
+    - id: anchored-pro-preset-headless-runner
+      name: /root/plugins-src/anchored-pro/verify/preset-headless-runner.mjs
+      inject:
+        - headlessStartup
+      config:
+        task: !!js ctx.headlessStartup.task
+        preset: anchored-pro
+
+- id: llm-pi-ai
+  config:
+    providers:
+      opencode-go:
+        baseURL: http://127.0.0.1:8787/zen/go/v1

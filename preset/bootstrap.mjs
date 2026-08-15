@@ -6,11 +6,13 @@
  * SheberDavid/v4-flash-godmode-opencode-go 对 dsh-router-standard 的适配。
  *
  * 与 anchored-flash 的核心差异 —— persona 按模型标定：
- *   dsh-router-standard 的 P11/P24 实测：weak 模式的最优 persona 依模型而不同。
- *     pro:   spec 句 + 分类指令（w6c）—— few-shot/回顾/收敛/反跑题锚对 Pro
- *           有害（会把轨迹拉离 Pro 的 RL 分布）；
- *     flash: neutral + 分类 + 回顾/收敛/反跑题/深度思考锚（w7）。
- *   本 preset 面向 Pro 满血：默认注入 w6c；仅当模型 id 命中 flash 时才用 w7。
+ *   dsh-router-standard 的 P11/P24 实测：weak 模式的最优 persona 依模型而不同；
+ *   但更强的事实（paper A1/A2 + 社区实证）：DSH minimal preset 的 persona 句
+ *   "You are a helpful software engineer assistant." 就是后训练的 exact RL
+ *   prompt（harness 快照测试自称 "the exact RL prompt and schemas"）。任何
+ *   附加/改写（如 w6c 的分类指令）都会把模型推入训练从未采样的分布间隙 →
+ *   高熵、混轨、工具调用失稳。因此 Pro 默认用精确 spec 句（一字不改）；
+ *   flash: neutral + 分类 + 回顾/收敛/反跑题/深度思考锚（w7）。
  *   两个 persona 文本都可通过 config 覆盖。
  *
  * 失效机制（rc.6 实证，见 anchored-flash README「为什么重写」）：
@@ -28,14 +30,15 @@
  *   - 压缩纪元：compaction/end 事件重置边界，之后需要新的晋升信号。
  * 每次 assemble 全量扫描（O(events)），无进程内 memo —— 简单且不会过期。
  *
- * 工具面设计（anchored-standard 在 V4 Pro 上实测标定，原样保留）：
- *   - 未晋升：只暴露 Minimal 真实工具对（bash + str_replace_editor）——
- *     issue #11 实测：256000 maxTokens 下 Minimal schema 锚定 5/5，
- *     而 standard 系 schema 11/11 全部落入 standard 式行为；
+ * 工具面设计（opencode-go 标定，见 BOOTSTRAP_TOOLS 注释）：
+ *   - 未晋升：官方 Minimal 真实工具对（持久 bash + str_replace_editor）；
+ *     只有 wire-level 对照证明 editor schema 是触发变量时，才配置回退到
+ *     [bash, read, write, edit]；
  *   - 晋升后：引导对 + 三个发现工具（dev_tool_search / skill_search /
  *     skill_load）+ 模型经 dev_tool_search 显式解锁的工具（不全量倾倒
  *     Standard 目录，避免 post-promotion 轨迹回归）；
- *   - 压缩后：回退到引导对 + compactionTools 工作集，直到新晋升信号。
+ *   - 压缩后：回退到引导对 + compactionTools 工作集；晋升目录并入工作集
+ *     （只增不减），避免工具中途消失。
  */
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -44,7 +47,12 @@ export const name = 'anchored-pro-bootstrap'
 /** Prompt assembly and the tools registry must exist. */
 export const inject = ['systemPrompt', 'tools']
 
-/** 首轮引导工具：官方 Minimal preset 的真实工具对（持久 bash + 编辑器）。 */
+/**
+ * 首轮引导工具：官方 minimal 的真实 RL 工具对（持久 bash + str_replace_editor）。
+ * 实验 2 复现官方满血条件（exact RL prompt AND schemas）。若 opencode-go 上
+ * str_replace_editor 仍调用失败，退回 [bash, read, write, edit]（4 工具会
+ * 提高首轮 schema 占比、可能影响思维链轨迹入口，见 README）。
+ */
 export const BOOTSTRAP_TOOLS = ['bash', 'str_replace_editor']
 
 /** 晋升后常驻的发现工具（工具搜索模式）。 */
@@ -53,6 +61,14 @@ export const RESIDENT_DISCOVERY_TOOLS = ['dev_tool_search', 'skill_search', 'ski
 /** 压缩后回退阶段的工作集：模型任务进行中需要继续干活。 */
 export const COMPACTION_TOOLS = ['read', 'write', 'edit', 'glob', 'grep', 'todo_write', 'ask_user_question']
 
+/**
+ * 首轮（未晋升/压缩回退）可用的 reasoning effort。opencode-go 的
+ * deepseek-v4-pro 目录只声明 off/high/max 三档（minimal/low/medium 为 null）。
+ * 'off' → 首轮不发 reasoning 参数（完全无思维）；'high' → 压链长；
+ * 'max' → 与晋升后一致（等于关闭缓启动）。
+ */
+export const BOOTSTRAP_REASONING_EFFORTS = new Set(['off', 'high', 'max'])
+
 /** 未晋升时从 pre-step 消息中剥离的自动注入来源（Standard 相对 Minimal 多出的注入）。 */
 export const SUPPRESSED_SOURCES = ['skill-catalog', 'agent-instructions']
 
@@ -60,18 +76,12 @@ export const SUPPRESSED_SOURCES = ['skill-catalog', 'agent-instructions']
 export const PROMOTE_EVENTS = new Set(['tool/call', 'assistant/message'])
 
 /**
- * Pro 满血 persona（w6c：spec 句 + 分类指令）。
- * dsh-router-standard P11 实测：对 Pro，spec 句 + 分类指令区分度 +5.0；
- * few-shot / 回顾 / 收敛 / 反跑题锚对 Pro 有害，绝不注入。
- */
-export const WEAK_PRO =
-  'You are a helpful software engineer assistant.\n'
-  + 'Before acting, decide the task type (build or fix) and adopt the matching '
-  + 'style: build → hands-on production; fix → inspect-and-plan.'
-
-/**
- * Minimal 纯 persona（anchored-standard 原版方案，V4 Pro Project2 评测 99 分）。
- * 想要「一句话 persona、零引导」时通过 config.proPersona 覆盖。
+ * Pro 满血 persona —— exact RL spec 句，一字不改。
+ * DSH minimal preset 的快照测试自称发送 "the exact RL prompt and schemas"：
+ * 本句 + 低工具占比首轮就是后训练条件本身（dsh-router-standard paper A1/A2：
+ * 附加/改写 persona 会把模型推入训练从未采样的分布间隙，行为高熵、混轨、
+ * 工具调用失稳；实测 paraphrased persona + 2 tools → 1 ambiguous + 1
+ * standard-like）。Project2 评测 99 分。config.proPersona 可覆盖。
  */
 export const MINIMAL_PERSONA = 'You are a helpful software engineer assistant.'
 
@@ -92,7 +102,8 @@ export function isFlashModel(modelId) {
 }
 
 /**
- * 按模型选 persona：Pro（默认）→ w6c；Flash → w7。config 可覆盖两者。
+ * 按模型选 persona：Pro（默认）→ MINIMAL_PERSONA（exact RL spec 句）；
+ * Flash → w7。config 可覆盖两者。
  */
 export function personaFor(modelId, config) {
   if (isFlashModel(modelId)) {
@@ -102,7 +113,7 @@ export function personaFor(modelId, config) {
   }
   return typeof config?.proPersona === 'string' && config.proPersona.length > 0
     ? config.proPersona
-    : WEAK_PRO
+    : MINIMAL_PERSONA
 }
 
 /**
@@ -148,12 +159,22 @@ export function unlockedFor(session) {
   return unlocked
 }
 
-/** 替换 persona section，保留其余 section（plan-mode 等）。 */
+/**
+ * 替换 persona section 并**收窄 system prompt 到 RL 条件**：只保留 persona
+ * 与 plan-mode，丢弃 harness:identity / host 注入的工具说明 / runtime 说明等
+ * 一切额外文本。官方 minimal 靠 `complete: true` 做到"persona 即完整
+ * system prompt"（exact RL prompt）；本 preset 在 assemble 层等效实现。
+ * 注意 harness:identity（名字不含 persona）此前漏网，导致首行是
+ * "You are an AI agent powered by DeepSeek Harness." —— 训练分布外的首行
+ * 会把思维链拉离 spec 语域（知乎机制：首行决定第一个 token 的分布）。
+ */
 export function applyPersona(sections, personaText) {
-  const rest = (sections ?? []).filter(
-    (section) => !/persona/i.test(section.name ?? ''),
-  )
-  return [...rest, { name: 'router-persona', text: personaText, order: 0 }]
+  const rest = (sections ?? []).filter((section) => {
+    const name = section.name ?? ''
+    // 保留 plan-mode（plan 模式功能），丢弃其余全部（identity/工具/环境说明）。
+    return /plan/i.test(name)
+  })
+  return [...rest, { name: 'router-persona', text: personaText, order: -1000 }]
 }
 
 /** 把组装好的目录收窄到 keep 集；缺引导工具时降级为全目录并告警一次。 */
@@ -188,6 +209,9 @@ export function apply(ctx, config) {
   // 可选：首轮输出预算上限（opt-in）。anchored-standard 实测 Pro 在
   // 256000 下 Minimal schema 即可锚定，无需 cap；cap 的送达依赖宿主
   // prepareCall 行为（rc.6 预构建包会用 adapterDefaults 覆盖），故默认不设。
+  // ⚠️ reasoning 模型慎用：maxTokens 同时封顶「思维+答案」，链长时会在思维
+  // 中途 max-tokens 截断、turn 结束 —— 表现为反复出现的「let me 碎片」。
+  // 压链长请用 bootstrapReasoningEffort（默认 high），而不是 maxTokens。
   const bootstrapMaxTokens = Number.isSafeInteger(source.bootstrapMaxTokens) && source.bootstrapMaxTokens > 0
     ? source.bootstrapMaxTokens
     : undefined
@@ -200,6 +224,19 @@ export function apply(ctx, config) {
       ctx.logger.warn(message)
     } catch {
       // Logger unavailable — the guard exists only to avoid spamming.
+    }
+  }
+
+  // 未配置时的首轮推理强度默认 'high'；bundled agent.cordis.yml 显式传入
+  // 'max' 以复现官方满血条件。未晋升请求注入该值，晋升后保留宿主 selection
+  // 的 effort，只有 selection 漏值才兜底。null / false 禁用；非法值告警一次。
+  let bootstrapReasoningEffort
+  if (source.bootstrapReasoningEffort !== null && source.bootstrapReasoningEffort !== false) {
+    const candidate = source.bootstrapReasoningEffort === undefined ? 'high' : source.bootstrapReasoningEffort
+    if (typeof candidate === 'string' && BOOTSTRAP_REASONING_EFFORTS.has(candidate)) {
+      bootstrapReasoningEffort = candidate
+    } else {
+      warnOnce(`${name}: invalid bootstrapReasoningEffort ${JSON.stringify(candidate)}, expected one of off|high|max — ignoring (keeping host selection)`)
     }
   }
 
@@ -223,9 +260,15 @@ export function apply(ctx, config) {
         // 晋升后：引导对 + 发现工具 + 显式解锁的工具（不全量倾倒 Standard 目录，
         // 避免把轨迹拉回 standard 式行为）。
         const keep = new Set([...bootstrapTools, ...RESIDENT_DISCOVERY_TOOLS, ...unlockedFor(session)])
+        // 压缩过的工作集会话：工作集必须保留在晋升目录里（只增不减），否则首个
+        // tool/call 后 read/write/edit 中途消失（opencode-go 实轨迹证）。
+        if (boundary >= 0) for (const toolName of compactionTools) keep.add(toolName)
         return {
           ...assembled,
           sections,
+          // 全程清空 contexts（官方 minimal 的 includeRuntimeContext: false）：
+          // runtime context 快照是训练分布外的文本，晋升后恢复会再次污染轨迹。
+          contexts: [],
           tools: keepTools(assembled.tools, keep, false, warnOnce),
         }
       }
@@ -245,32 +288,48 @@ export function apply(ctx, config) {
     }
   })
 
-  // 可选的引导阶段输出预算上限（opt-in）。通过 agent/request waterfall 送达
-  // 首轮请求；晋升后显式剥离（下一请求的 seed 提议会携带上一 header 的
-  // maxTokens 前进，不剥离会永久生效）。注意 rc.6 预构建包的 prepareCall 可能
-  // 用 adapterDefaults.maxTokens 覆盖该值 —— 与 anchored-standard 观察一致，
-  // 因此默认不设，Minimal schema 在 256000 下即可锚定。
-  if (bootstrapMaxTokens !== undefined) {
-    ctx.on('agent/request', async (payload, next) => {
-      const resolved = await next()
-      try {
-        const agent = payload?.agent
-        if (agent === undefined || agent.session === undefined) return resolved
-        const { promoted } = phaseOf(agent.session)
-        if (promoted) {
-          if (resolved?.maxTokens === bootstrapMaxTokens) {
-            const { maxTokens: _bootstrap, ...rest } = resolved
-            return rest
-          }
-          return resolved
-        }
-        return { ...resolved, maxTokens: bootstrapMaxTokens }
-      } catch (error) {
-        warnOnce(`${name}: maxTokens filter failed, passing through: ${String((error && error.message) || error)}`)
-        return resolved
+  // 请求级相位控制（始终注册）：prepend 语义下本监听器最先被调用、但在
+  // next() 之后应用修改 —— 值最后生效，可覆盖 dsh-agent 的 model-selection
+  // 重放（settings 的 reasoningEffort=max）。晋升后剥离插件管理的字段，
+  // 回到宿主 selection 的 effort 与适配器默认 maxTokens。
+  //   - bootstrapReasoningEffort（默认 'high'）：未晋升请求注入（首轮/压缩
+  //     回退）；晋升后**不剥离** —— 回到宿主 settings 的 effort 由
+  //     model-selection（dsh-agent-default-model）每轮重放保证。剥离是错误
+  //     做法：本监听器在 next() 之后动手，剥离会删掉 model-selection 刚
+  //     应用的值，最终 config 无 reasoningEffort → pi-ai 不发 reasoning
+  //     参数 → opencode-go 网关回落 default（实测 bug）。
+  //   - bootstrapMaxTokens（opt-in）：保留原行为；对 reasoning 模型是错误
+  //     杠杆，见上方注释。
+  ctx.on('agent/request', async (payload, next) => {
+    const resolved = await next()
+    try {
+      const agent = payload?.agent
+      if (agent === undefined || agent.session === undefined) return resolved
+      const { promoted } = phaseOf(agent.session)
+      if (!promoted) {
+        let out = resolved
+        if (bootstrapReasoningEffort !== undefined) out = { ...out, reasoningEffort: bootstrapReasoningEffort }
+        if (bootstrapMaxTokens !== undefined) out = { ...out, maxTokens: bootstrapMaxTokens }
+        return out
       }
-    }, { prepend: true })
-  }
+      // 晋升后：只剥离 maxTokens（回到适配器默认）。reasoningEffort 保持
+      // next() 的结果；但若宿主 selection 缺失 effort（UI 换模型时
+      // selectModel 不带 effort 的 host bug → picked 无 effort → 晋升后
+      // 全部请求 effort=None → 网关 default），用 bootstrap 值兜底。
+      let out = resolved
+      if (bootstrapReasoningEffort !== undefined && out?.reasoningEffort === undefined) {
+        out = { ...out, reasoningEffort: bootstrapReasoningEffort }
+      }
+      if (bootstrapMaxTokens !== undefined && out?.maxTokens === bootstrapMaxTokens) {
+        const { maxTokens: _bootstrap, ...rest } = out
+        out = rest
+      }
+      return out
+    } catch (error) {
+      warnOnce(`${name}: request filter failed, passing through: ${String((error && error.message) || error)}`)
+      return resolved
+    }
+  }, { prepend: true })
 
   ctx.on('agent/pre-step', async ({ agent }, next) => {
     const decision = await next()

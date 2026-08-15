@@ -1,0 +1,26 @@
+[
+  {
+    "name": "baseline",
+    "repeat": 12
+  },
+  {
+    "name": "without-user-agent",
+    "dropHeaders": ["user-agent"]
+  },
+  {
+    "name": "max-tokens-256000",
+    "setJson": {
+      "max_tokens": 256000
+    }
+  },
+  {
+    "name": "reasoning-high",
+    "setJson": {
+      "reasoning_effort": "high"
+    }
+  },
+  {
+    "name": "without-tools",
+    "deleteJson": ["tools"]
+  }
+]
