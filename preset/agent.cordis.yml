@@ -1,0 +1,305 @@
+# The `anchored-pro` experimental preset: Pro 满血 × Minimal 工具面锚定。
+#
+# 组成继承 xiaobright/dsh-anchored-standard（Standard 全快照），核心差异：
+#   - bootstrap.mjs 取代 tool-bootstrap.mjs：晋升判定改为 system-prompt/assemble
+#     冷扫描 session.events（rc.6 的 session/event 观察对 preset 作用域失效，
+#     已实证），persona 静态合并 Pro 标定引导（w6c：spec 句 + 分类指令；
+#     P11 实测对 Pro 最优，w7 的回顾/收敛/反跑题锚对 Pro 有害）。
+#   - 不挂 dsh-agent-instructions / dsh-tool-skill：AGENTS.md 与 skill catalog
+#     的全量注入会扰动轨迹，改为晋升后一次性「文件存在」提示（bootstrap.mjs
+#     内置）与按需 skill_search / skill_load。
+#
+# 阶段：
+#   - 未晋升（首轮）：只暴露 Minimal 真实工具对 —— 持久 bash +
+#     str_replace_editor（issue #11：256000 maxTokens 下 Minimal schema
+#     5/5 锚定，standard 系 schema 11/11 全部 standard 式行为）；同时剥离
+#     自动注入上下文、清空 assembled.contexts。
+#   - 晋升后（日志中出现首个 tool/call 或 assistant/message）：引导对 +
+#     dev_tool_search / skill_search / skill_load + 模型显式解锁的工具。
+#     重型工具（web_search、subagent、workflow、goal、job……）一次
+#     dev_tool_search 解锁即得，不全量倾倒 Standard 目录。
+#   - 压缩后（compaction/end 之后）：回退到引导对 + compactionTools 工作集，
+#     直到出现新的晋升信号（epoch 语义，全部由持久日志推导）。
+#
+# 本文件是 AGENT-PLANE 组成。roster 在 standing scope 下挂载一次，每个命名
+# 它的会话通过 scope 父链加入；工具与提示段注册覆盖每个加入的 agent，会话
+# 自身状态在插件内按 Session/Agent 键控。宿主组成持有注册表、沙箱、持久化
+# 与模型路由 —— preset 不拥有这些。
+#
+# 带 `isolate` realm 的服务行必须放进 group：否则发布进 root realm 变成进程
+# 全局，两个会话挂同一 preset 时冲突，dsh-agent-presets 会在挂载时拒绝。
+
+# ── bootstrap（必须第一行）──────────────────────────────────────────────────
+
+# 本行必须排在所有行之前：注册顺序 + 空 inject 列表 + pre-step 监听器的
+# prepend 标志，让上下文剥离成为最外层变换（waterfall after-next 按注册
+# 逆序应用）。bootstrap.mjs 同时负责 assemble 阶段的 persona 替换、工具面
+# 收窄与晋升推导。
+- id: anchored-pro-bootstrap
+  name: ./bootstrap.mjs
+  config:
+    bootstrapTools: [bash, str_replace_editor]
+    # 压缩后回退阶段的工作集：模型任务进行中需要继续干活，但面对小目录。
+    compactionTools: [read, write, edit, glob, grep, todo_write, ask_user_question]
+    suppressedContextSources: [agent-instructions, skill-catalog]
+    instructionHint: true
+    # 可选：首轮输出预算上限（opt-in，默认不设 —— Minimal schema 在
+    # 256000 下即可锚定；rc.6 预构建包可能用 adapterDefaults 覆盖该值）。
+    # bootstrapMaxTokens: 1024
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+# 兜底 persona（仅在 assemble 前存在；bootstrap.mjs 会替换 persona section）。
+# 不得设置 complete: true —— complete 会在 assemble 末尾强制以该 section
+# 为准，覆盖 bootstrap 注入的 Flash 神模式 persona。
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a helpful software engineer assistant.
+
+# 按需工具发现（工具搜索模式）：晋升后常驻目录保持最小；重型工具经
+# dev_tool_search 按需解锁。
+- id: dev-tool-search
+  name: ./dev-tool-search.mjs
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# `shell-env` 留在宿主组成（注入 DSH_WEB_URL/DSH_WEB_MODE，与平台相关）；
+# 两个 shell 工具从宿主注册表消费执行器（bash-sandbox/pwsh-sandbox 在宿主）。
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  # 全平台禁用：persistent-shell 组以同一工具名 `bash` 注册到本 preset 层，
+  # 工具注册表拒绝同层重名。
+  disabled: true
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# Minimal preset 的 shell：PTY 持久 bash，配置与官方 minimal preset 的
+# persistent-shell 组逐字节一致，让首轮请求暴露与 Minimal 完全相同的真实
+# `bash` schema。PTY 注册表是 agent 自有服务，放 entry-local realm；后端仍
+# 消费宿主沙箱策略与子进程实现。
+#
+# WINDOWS 上禁用（DSH 的 PTY 后端仅 linux/darwin）：custom-bash 行在 win32
+# 注册同名 `bash` 工具（平台互斥）。
+- id: persistent-shell
+  name: cordis:group
+  group: true
+  disabled: !!js process.platform === 'win32'
+  isolate:
+    terminals: true
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      config:
+        timeoutMs: 300000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * You do have access to a mirror of common linux and python packages via apt and pip.
+          * State is persistent across command calls and discussions with the user.
+          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+
+# Windows-only `bash`（custom-bash.mjs）：与持久 shell 同名注册、Minimal 兼容
+# 描述，但走普通跨平台子进程通道（bash -c）而非 PTY。
+- id: custom-bash
+  name: ./custom-bash.mjs
+  disabled: !!js process.platform !== 'win32'
+  config:
+    bashPath: 'C:\Program Files\Git\bin\bash.exe'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# 两者注册进宿主 `tools` 注册表且不 provide 任何服务，无需 realm。
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# Minimal preset 的第二个工具：`str_replace_editor` 基于裸本地文件系统，
+# 配置与官方 minimal preset 的 filesystem 组逐字节一致。编辑器的 realm 只在
+# 本组内遮蔽宿主沙箱 fs provider —— 标准 read/write/edit 保持沙箱 fs，
+# 引导编辑器用本地 fs。
+- id: bootstrap-filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+
+# ── background jobs ─────────────────────────────────────────────────────────
+
+# 只挂模型侧控制。任务注册表在宿主（生产者位于任何本文件可达的 realm 之外）。
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# 技能注册表在宿主组成、按 scope 分层：本行注册进本 preset 的层，无需 realm。
+# 全量 skill catalog 注入（dsh-tool-skill 的 ~9KB <available_skills> 提醒）
+# 被移除（扰动轨迹），改为 skill_search / skill_load 按需发现。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: skill-search
+  name: ./skill-search.mjs
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+# 只挂模型侧工具；goal 服务/会话驱动/命令在宿主（Gateway 以 Remote 端点服务）。
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+# Plan 状态按 agent 天然隔离，entry-local realm 正是正确的生命周期。
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# `compaction-basic` 通过 ctx.get 读 toolResultPrune，pruner 必须共享此 realm。
+# tokenMeter 有意留在宿主（按 Session 键控、浏览器读取投影单位）。
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation and workflows ────────────────────────────────────────────────
+
+# subagents 注册表在宿主（进程单例）；本 preset 贡献委派工具，解析宿主注册表。
+# workflows 只有 agent 读，本组共享一个 entry-local realm。
+# tool-subagent-report 是宿主平面（向单例注册 CONTINUABLE SETUP，非 scope 感知）。
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        backgroundMode: continuable
+
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    # 产品 provider 是宿主单例。复制本 preset 后移除 disabled 即可只对副本开放。
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        enableRunInBackground: false
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        enableRunInBackground: false
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# web 服务与搜索 provider 在宿主组成；这里只挂模型侧工具。
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
