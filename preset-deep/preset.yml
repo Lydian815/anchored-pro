@@ -1,0 +1,3 @@
+name: Anchored Pro Deep (opencode-go)
+description: Pro 满血 × exact RL persona（"You are a helpful software engineer assistant." 一字不改，minimal 快照 = the exact RL prompt and schemas）× 官方 Minimal 真实工具对（bash + str_replace_editor）；晋升后发现工具 + 按需解锁；首轮与压缩回退均显式 reasoningEffort=max；压缩后目录只增不减
+order: 6

@@ -59,7 +59,7 @@
     # Anchored Pro Deep：切断回灌配套的显式长思考引导（五阶段推演：
     # Scope→Model→Challenge→Cross-check→Conclude）。默认 false = 纯 spec 句
     # （exact RL）；true = spec 句首行 + 多阶段思考指令（建模/长分析更详尽）。
-    # deepThinking: true
+    deepThinking: true
     # 可选：首轮输出预算上限（opt-in，默认不设 —— Minimal schema 在
     # 256000 下即可锚定；rc.6 预构建包可能用 adapterDefaults 覆盖该值）。
     # ⚠️ reasoning 模型慎用：maxTokens 同时封顶「思维+答案」，链长时会在

@@ -208,6 +208,26 @@ if (nonEmptyThinkingBlocks.length > 0 && model.provider !== "opencode-go") {
 > ⚠️ 这是对 npm 全局包（`@earendil-works/pi-ai`）的 patch，升级 dsh/pi-ai
 > 会被覆盖，需重打；备份在 `openai-completions.js.bak-anchored-pro`。
 
+## Anchored Pro Deep（长思考引导，可选）
+
+切断回灌后，pro 模型失去"看到自己历史长链"的激励，复杂建模/长分析任务中
+思考可能变浅。**`deepThinking: true`** 在 exact RL spec 句**之后**追加显式
+五阶段推演指令（Scope → Model → Challenge → Cross-check → Conclude），
+首行仍是 spec 句（RL 锚定不破坏），同时要求结构化分阶段思考、主动
+red-team 自查、独立交叉验证，并内置反 "Let me…" 空转锚。
+
+```yaml
+# agent.cordis.yml → anchored-pro-bootstrap 行
+config:
+  deepThinking: true   # 默认 false = 纯 spec 句（exact RL）
+```
+
+- `deepThinking: false`（默认）—— 满血标准形态：纯 spec 句，we/let's 语域，
+  建模实测 30/30；
+- `deepThinking: true` —— Deep 形态：spec 句 + 五阶段引导，适合需要更详尽
+  推演的建模/长分析任务；
+- `proPersona` 自定义优先级高于 `deepThinking`；Flash 不受影响（仍走 w7）。
+
 ## 致谢
 
 基于 [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)
